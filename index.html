@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF 페이지 편집기</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f3f5f7;
+      color: #222;
+    }
+    header {
+      background: #222;
+      color: white;
+      padding: 28px 20px;
+      text-align: center;
+    }
+    header h1 { margin: 0 0 8px; font-size: 30px; }
+    header p { margin: 0; color: #ddd; }
+    main {
+      max-width: 1000px;
+      margin: 30px auto;
+      padding: 0 20px 50px;
+    }
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    }
+    h2 { margin: 0 0 16px; font-size: 22px; }
+    .upload-box {
+      border: 2px dashed #aaa;
+      border-radius: 14px;
+      padding: 28px;
+      text-align: center;
+      background: #fafafa;
+    }
+    input[type="file"] {
+      margin-top: 14px;
+      padding: 10px;
+      width: 100%;
+      max-width: 430px;
+    }
+    .guide {
+      line-height: 1.7;
+      color: #555;
+      margin: 12px 0 0;
+    }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 11px 16px;
+      cursor: pointer;
+      font-weight: 700;
+      background: #2f6fed;
+      color: white;
+    }
+    button.secondary { background: #555; }
+    button.danger { background: #d43f3a; }
+    button.light {
+      background: #eef2f7;
+      color: #222;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    #pageList {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 10px;
+    }
+    .page-item {
+      display: grid;
+      grid-template-columns: 34px 1fr auto;
+      align-items: center;
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      background: #fff;
+    }
+    .handle {
+      cursor: grab;
+      text-align: center;
+      color: #777;
+      font-size: 20px;
+      user-select: none;
+    }
+    .page-title { font-weight: 700; }
+    .page-sub { font-size: 13px; color: #666; margin-top: 4px; }
+    .item-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .item-actions button {
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+    .status {
+      margin-top: 14px;
+      color: #444;
+      min-height: 24px;
+      line-height: 1.5;
+    }
+    .empty {
+      padding: 28px;
+      text-align: center;
+      color: #777;
+      background: #fafafa;
+      border: 1px solid #e0e0e0;
+      border-radius: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>PDF 페이지 편집기</h1>
+    <p>여러 PDF를 불러와 페이지를 삭제하고 순서를 바꾼 뒤 새 PDF로 저장합니다.</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>1. PDF 파일 업로드</h2>
+      <div class="upload-box">
+        <strong>PDF 파일을 하나 이상 선택하세요.</strong><br />
+        <input id="pdfInput" type="file" accept="application/pdf" multiple />
+        <p class="guide">업로드한 PDF의 모든 페이지가 아래 목록에 표시됩니다. 페이지는 드래그하거나 위/아래 버튼으로 순서를 바꿀 수 있습니다.</p>
+      </div>
+      <div class="toolbar">
+        <button id="clearBtn" class="secondary" disabled>전체 초기화</button>
+        <button id="downloadBtn" disabled>새 PDF 다운로드</button>
+      </div>
+      <div id="status" class="status"></div>
+    </section>
+
+    <section class="card">
+      <h2>2. 페이지 삭제 및 순서 변경</h2>
+      <ul id="pageList"></ul>
+      <div id="emptyBox" class="empty">아직 업로드된 PDF 페이지가 없습니다.</div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+  <script>
+    const pdfInput = document.getElementById('pdfInput');
+    const pageList = document.getElementById('pageList');
+    const emptyBox = document.getElementById('emptyBox');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const statusBox = document.getElementById('status');
+
+    const state = {
+      files: [],
+      pages: []
+    };
+
+    function setStatus(message) {
+      statusBox.textContent = message || '';
+    }
+
+    function updateButtons() {
+      const hasPages = state.pages.length > 0;
+      downloadBtn.disabled = !hasPages;
+      clearBtn.disabled = !hasPages;
+      emptyBox.style.display = hasPages ? 'none' : 'block';
+    }
+
+    function syncOrderFromDom() {
+      const ids = Array.from(pageList.querySelectorAll('.page-item')).map(li => li.dataset.id);
+      state.pages.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+    }
+
+    function renderPages() {
+      pageList.innerHTML = '';
+
+      state.pages.forEach((page, index) => {
+        const li = document.createElement('li');
+        li.className = 'page-item';
+        li.dataset.id = page.id;
+
+        li.innerHTML = `
+          <div class="handle">☰</div>
+          <div>
+            <div class="page-title">${index + 1}. ${escapeHtml(page.fileName)} - ${page.pageIndex + 1}페이지</div>
+            <div class="page-sub">원본 파일 ${page.sourceNumber}번 · 전체 ${page.totalPages}페이지 중 ${page.pageIndex + 1}페이지</div>
+          </div>
+          <div class="item-actions">
+            <button class="light" data-action="up">위</button>
+            <button class="light" data-action="down">아래</button>
+            <button class="danger" data-action="delete">삭제</button>
+          </div>
+        `;
+
+        li.querySelector('[data-action="delete"]').addEventListener('click', () => {
+          state.pages = state.pages.filter(item => item.id !== page.id);
+          renderPages();
+        });
+
+        li.querySelector('[data-action="up"]').addEventListener('click', () => {
+          if (index === 0) return;
+          [state.pages[index - 1], state.pages[index]] = [state.pages[index], state.pages[index - 1]];
+          renderPages();
+        });
+
+        li.querySelector('[data-action="down"]').addEventListener('click', () => {
+          if (index === state.pages.length - 1) return;
+          [state.pages[index + 1], state.pages[index]] = [state.pages[index], state.pages[index + 1]];
+          renderPages();
+        });
+
+        pageList.appendChild(li);
+      });
+
+      updateButtons();
+    }
+
+    function escapeHtml(text) {
+      return text.replace(/[&<>'"]/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        "'": '&#39;',
+        '"': '&quot;'
+      }[char]));
+    }
+
+    new Sortable(pageList, {
+      handle: '.handle',
+      animation: 160,
+      onEnd: () => {
+        syncOrderFromDom();
+        renderPages();
+      }
+    });
+
+    pdfInput.addEventListener('change', async (event) => {
+      const selectedFiles = Array.from(event.target.files || []);
+      if (selectedFiles.length === 0) return;
+
+      setStatus('PDF를 읽는 중입니다...');
+      state.files = [];
+      state.pages = [];
+
+      try {
+        for (let i = 0; i < selectedFiles.length; i++) {
+          const file = selectedFiles[i];
+          const bytes = await file.arrayBuffer();
+          const pdfDoc = await PDFLib.PDFDocument.load(bytes);
+          const totalPages = pdfDoc.getPageCount();
+
+          state.files.push({
+            name: file.name,
+            bytes: bytes,
+            sourceNumber: i + 1
+          });
+
+          for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+            state.pages.push({
+              id: `${Date.now()}-${i}-${pageIndex}-${Math.random().toString(16).slice(2)}`,
+              fileName: file.name,
+              sourceIndex: i,
+              sourceNumber: i + 1,
+              pageIndex: pageIndex,
+              totalPages: totalPages
+            });
+          }
+        }
+
+        renderPages();
+        setStatus(`총 ${state.files.length}개 PDF, ${state.pages.length}개 페이지를 불러왔습니다.`);
+      } catch (error) {
+        console.error(error);
+        setStatus('PDF를 읽는 중 오류가 발생했습니다. 암호가 걸린 PDF는 지원하지 않을 수 있습니다.');
+      }
+    });
+
+    clearBtn.addEventListener('click', () => {
+      state.files = [];
+      state.pages = [];
+      pdfInput.value = '';
+      renderPages();
+      setStatus('초기화했습니다.');
+    });
+
+    downloadBtn.addEventListener('click', async () => {
+      if (state.pages.length === 0) return;
+
+      setStatus('새 PDF를 만드는 중입니다...');
+      downloadBtn.disabled = true;
+
+      try {
+        const outputPdf = await PDFLib.PDFDocument.create();
+        const sourceDocs = [];
+
+        for (const file of state.files) {
+          sourceDocs.push(await PDFLib.PDFDocument.load(file.bytes));
+        }
+
+        for (const page of state.pages) {
+          const sourceDoc = sourceDocs[page.sourceIndex];
+          const [copiedPage] = await outputPdf.copyPages(sourceDoc, [page.pageIndex]);
+          outputPdf.addPage(copiedPage);
+        }
+
+        const pdfBytes = await outputPdf.save();
+        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'edited.pdf';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+
+        setStatus('다운로드가 완료되었습니다.');
+      } catch (error) {
+        console.error(error);
+        setStatus('새 PDF 생성 중 오류가 발생했습니다.');
+      } finally {
+        updateButtons();
+      }
+    });
+
+    updateButtons();
+  </script>
+</body>
+</html>
